@@ -1,0 +1,11 @@
+<RCC>
+    <qresource prefix="/">
+        <file>main.qml</file>
+        <file>qtquickcontrols2.conf</file>
+        <file>GaugeBackground.qml</file>
+        <file>WindDirGauge.qml</file>
+        <file>GaugeText.qml</file>
+        <file>WindVeloGauge.qml</file>
+        <file>LinearGauge.qml</file>
+    </qresource>
+</RCC>
