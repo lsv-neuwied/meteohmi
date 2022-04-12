@@ -1,12 +1,13 @@
 #ifndef MQTTCLIENT_H
 #define MQTTCLIENT_H
 
+#include <cstdlib>
+#include <mosquitto.h>
+
 #include <QObject>
 #include <QVariant>
 #include <QVector>
 #include <QSocketNotifier>
-
-#include <mosquitto.h>
 
 class MqttClient : public QObject
 {
@@ -17,8 +18,11 @@ public:
 
     int setUsernamePassword(const QString &username, const QString &password);
 
-    int connectBroker(const QString &host, int port, int keepalive, int reconnect_intervall);
-    int disconnectBroker();
+    int connectBroker(const QString &host, int port, int keepalive, unsigned int reconnect_delay);
+    void disconnectBroker();
+
+    bool getIsConnected() { return isConnected; }
+    bool getIsOnline() { return isOnline; }
 
     int publish(const QString &topic, const QByteArray &payload, int qos = 0, bool retain = false, int *mid = NULL);
     int subscribe(const QString &sub, int qos, int *mid = NULL);
@@ -37,17 +41,13 @@ private:
     void deleteSocketNotifier();
     void enableWriteSocketNotifier();
 
-    static int libInitCount;
-
     struct mosquitto *mosq;
-    long long reconnect_intervall_ms;
-    long long last_connected_ms;
 
     bool isConnected;
-    QSocketNotifier *snRead;
-    QSocketNotifier *snWrite;
+    bool isOnline;
 
 signals:
+    // please use queued connections for this!!!
     void onConnect(int rc);
     void onDisconnect(int rc);
     void onPublish(int mid);
@@ -55,13 +55,6 @@ signals:
     void onSubscribe(int mid, const QVector<int> &granted_qos);
     void onUnsubscribe(int mid);
     void onLog(int level, const QString &str);
-
-private slots:
-    void readyRead(int socket);
-    void readyWrite(int socket);
-
-protected:
-    void timerEvent(QTimerEvent *event);
 
 };
 

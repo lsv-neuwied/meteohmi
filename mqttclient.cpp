@@ -1,17 +1,5 @@
 #include "mqttclient.h"
 
-#include <time.h>
-
-int MqttClient::libInitCount = 0;
-
-#define LOOP_MISC_PERIOD_MS 100
-
-static long long currentTimestamp() {
-    struct timespec tp;
-    clock_gettime(CLOCK_MONOTONIC, &tp);
-    return (long long) tp.tv_sec * 1000LL + ((long long) tp.tv_nsec / 1000000LL);
-}
-
 static void connect_callback(struct mosquitto *mosq, void *obj, int rc)
 {
     Q_UNUSED(mosq)
@@ -64,13 +52,6 @@ static void log_callback(struct mosquitto *mosq, void *obj, int level, const cha
 MqttClient::MqttClient(QString clientId, bool cleanSession, QObject *parent) : QObject(parent)
 {
     isConnected = false;
-    snRead = NULL;
-    snWrite = NULL;
-
-    if (libInitCount == 0) {
-        mosquitto_lib_init();
-    }
-    libInitCount++;
 
     mosq = mosquitto_new(clientId.isNull() ? NULL : clientId.toLocal8Bit().constData(), cleanSession, (void *) this);
 
@@ -81,19 +62,12 @@ MqttClient::MqttClient(QString clientId, bool cleanSession, QObject *parent) : Q
     mosquitto_subscribe_callback_set(mosq, subscribe_callback);
     mosquitto_unsubscribe_callback_set(mosq, unsubscribe_callback);
     mosquitto_log_callback_set(mosq, log_callback);
-
-    startTimer(LOOP_MISC_PERIOD_MS);
 }
 
 MqttClient::~MqttClient()
 {
     disconnectBroker();
     mosquitto_destroy(mosq);
-
-    libInitCount--;
-    if (libInitCount == 0) {
-        mosquitto_lib_cleanup();
-    }
 }
 
 int MqttClient::setUsernamePassword(const QString &username, const QString &password)
@@ -101,101 +75,54 @@ int MqttClient::setUsernamePassword(const QString &username, const QString &pass
     return mosquitto_username_pw_set(mosq, username.toLocal8Bit().constData(), password.toLocal8Bit().constData());
 }
 
-int MqttClient::connectBroker(const QString &host, int port, int keepalive, int reconnect_intervall)
+int MqttClient::connectBroker(const QString &host, int port, int keepalive, unsigned int reconnect_delay)
 {
+    int rc;
+
     if (isConnected) {
         return MOSQ_ERR_SUCCESS;
     }
 
-    int rc = mosquitto_connect(mosq, host.toLocal8Bit().constData(), port, keepalive);
+    rc =  mosquitto_reconnect_delay_set(mosq, reconnect_delay, reconnect_delay, false);
     if (rc != MOSQ_ERR_SUCCESS) {
         return rc;
     }
 
-    reconnect_intervall_ms = reconnect_intervall * 1000L;
-    last_connected_ms = currentTimestamp();
-    isConnected = true;
+    mosquitto_connect_async(mosq, host.toLocal8Bit().constData(), port, keepalive);
 
-    createSocketNotifier();
+    rc = mosquitto_loop_start(mosq);
+    if (rc != MOSQ_ERR_SUCCESS) {
+        mosquitto_disconnect(mosq);
+        return rc;
+    }
+
+    isConnected = true;
 
     return MOSQ_ERR_SUCCESS;
 }
 
-int MqttClient::disconnectBroker()
+void MqttClient::disconnectBroker()
 {
     if (!isConnected) {
-        return MOSQ_ERR_SUCCESS;
-    }
-
-    isConnected = false;
-    reconnect_intervall_ms = 0;
-    last_connected_ms = 0;
-
-    return mosquitto_disconnect(mosq);
-}
-
-void MqttClient::timerEvent(QTimerEvent *event)
-{
-    Q_UNUSED(event)
-    if (isConnected) {
-        createSocketNotifier();
-        mosquitto_loop_misc(mosq);
-
-        // check for reconnect
-        if (mosquitto_socket(mosq) >= 0) {
-            last_connected_ms = currentTimestamp();
-        } else if (last_connected_ms < (currentTimestamp() - reconnect_intervall_ms)) {
-            mosquitto_reconnect(mosq);
-        }
-    }
-}
-
-void MqttClient::createSocketNotifier() {
-    int fd = mosquitto_socket(mosq);
-    if (fd < 0) {
         return;
     }
 
-    if (snRead == NULL) {
-        snRead = new QSocketNotifier(fd, QSocketNotifier::Read);
-        connect(snRead, SIGNAL(activated(int)), this, SLOT(readyRead(int)));
-    }
-    if (snWrite == NULL) {
-        snWrite = new QSocketNotifier(fd, QSocketNotifier::Write);
-        snWrite->setEnabled(false);
-        connect(snWrite, SIGNAL(activated(int)), this, SLOT(readyWrite(int)));
-    }
-    enableWriteSocketNotifier();
-}
+    isConnected = false;
 
-void MqttClient::deleteSocketNotifier() {
-    if (snRead != NULL) {
-        delete snRead;
-        snRead = NULL;
-    }
-    if (snWrite != NULL) {
-        delete snWrite;
-        snWrite = NULL;
-    }
-}
-
-void MqttClient::enableWriteSocketNotifier() {
-    if (snWrite != NULL) {
-        snWrite->setEnabled(mosquitto_want_write(mosq));
-    }
+    mosquitto_disconnect(mosq);
+    mosquitto_loop_stop(mosq, false);
 }
 
 int MqttClient::publish(const QString &topic, const QByteArray &payload, int qos, bool retain, int *mid)
 {
-    int ret = mosquitto_publish(mosq,
-                                mid,
-                                topic.toLocal8Bit().constData(),
-                                payload.length(),
-                                payload.constData(),
-                                qos,
-                                retain);
-    enableWriteSocketNotifier();
-    return ret;
+    return mosquitto_publish(mosq,
+                             mid,
+                             topic.toLocal8Bit().constData(),
+                             payload.length(),
+                             payload.constData(),
+                             qos,
+                             retain);
+
 }
 
 int MqttClient::subscribe(const QString &sub, int qos, int *mid)
@@ -208,26 +135,15 @@ int MqttClient::unsubscribe(const QString &sub, int *mid)
     return mosquitto_unsubscribe(mosq, mid, sub.toLocal8Bit().constData());
 }
 
-void MqttClient::readyRead(int socket) {
-    Q_UNUSED(socket)
-    mosquitto_loop_read(mosq, 1);
-    enableWriteSocketNotifier();
-}
-
-void MqttClient::readyWrite(int socket) {
-    Q_UNUSED(socket)
-    mosquitto_loop_write(mosq, 1);
-    enableWriteSocketNotifier();
-}
-
 void MqttClient::connectCallback(int rc)
 {
+    isOnline = true;
     emit onConnect(rc);
 }
 
 void MqttClient::disconnectCallback(int rc)
 {
-    deleteSocketNotifier();
+    isOnline = false;
     emit onDisconnect(rc);
 }
 
