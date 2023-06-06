@@ -41,7 +41,7 @@ int main(int argc, char *argv[])
     if (!mqttUser.isNull()) {
         mqtt.setUsernamePassword(mqttUser, mqttPasswd);
     }
-    mqtt.connectBroker(mqttHost, mqttPort, 0, 5);
+    mqtt.connectBroker(mqttHost, mqttPort, 60, 5);
 
     MqttSender sender(&mqtt, &collector);
 
